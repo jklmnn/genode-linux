@@ -9,6 +9,7 @@
 #include <linux/slab.h>
 
 #include "genode.h"
+#include "mem_arch.h"
 
 
 static int open_mmio(struct inode *inode, struct file *file)
@@ -28,9 +29,53 @@ static int open_mmio(struct inode *inode, struct file *file)
     return 0;
 }
 
+static const struct vm_operations_struct mmap_mmio_ops = {
+#ifndef CONFIG_HAVE_IOREMAP_PROT
+    .access = generic_access_phys
+#endif //CONFIG_HAVE_IOREMAP_PROT
+};
+
 static int mmap_mmio(struct file* file, struct vm_area_struct *vma)
 {
-    mmio_range_t *range = file->private_data;
+    mmio_range_t *range = (mmio_range_t*)file->private_data;
+    size_t size = vma->vm_end - vma->vm_start;
+    phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
+    
+    if(size > range->length)
+        return -EPERM;
+
+    if(range->phys > offset)
+        return -EPERM;
+
+    if(range->phys + range->length < offset + size)
+        return -EPERM;
+
+    if(offset + (phys_addr_t)size - 1 < offset)
+        return -EINVAL;
+
+    if(!valid_mmap_phys_addr_range(vma->vm_pgoff, size))
+        return -EINVAL;
+
+    if(!private_mapping_ok(vma))
+        return -ENOSYS;
+
+    if(!range_is_allowed(vma->vm_pgoff, size))
+        return -EPERM;
+
+    if(!phys_mem_access_prot_allowed(file, vma->vm_pgoff, size, &vma->vm_page_prot))
+        return -EINVAL;
+
+    vma->vm_ops = &mmap_mmio_ops;
+
+    if(remap_pfn_range(
+                vma,
+                vma->vm_start,
+                vma->vm_pgoff,
+                size,
+                vma->vm_page_prot
+                ))
+        return -EAGAIN;
+
     printk(KERN_INFO "%s -> %lx x %lu\n", __func__, range->phys, range->length);
     return 0;
 }
