@@ -15,7 +15,6 @@
 static int open_mmio(struct inode *inode, struct file *file)
 {
     mmio_range_t *range;
-    printk(KERN_INFO "%s\n", __func__);
     
     if(!capable(CAP_SYS_RAWIO))
         return -EPERM;
@@ -40,7 +39,8 @@ static int mmap_mmio(struct file* file, struct vm_area_struct *vma)
     mmio_range_t *range = (mmio_range_t*)file->private_data;
     size_t size = vma->vm_end - vma->vm_start;
     phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
-    
+
+    // check boundaries set by ioctl
     if(size > range->length)
         return -EPERM;
 
@@ -50,6 +50,8 @@ static int mmap_mmio(struct file* file, struct vm_area_struct *vma)
     if(range->phys + range->length < offset + size)
         return -EPERM;
 
+
+    // check boundaries set by kernel and architecture
     if(offset + (phys_addr_t)size - 1 < offset)
         return -EINVAL;
 
@@ -65,6 +67,7 @@ static int mmap_mmio(struct file* file, struct vm_area_struct *vma)
     if(!phys_mem_access_prot_allowed(file, vma->vm_pgoff, size, &vma->vm_page_prot))
         return -EINVAL;
 
+
     vma->vm_ops = &mmap_mmio_ops;
 
     if(remap_pfn_range(
@@ -76,27 +79,14 @@ static int mmap_mmio(struct file* file, struct vm_area_struct *vma)
                 ))
         return -EAGAIN;
 
-    printk(KERN_INFO "%s -> %lx x %lu\n", __func__, range->phys, range->length);
     return 0;
-}
-
-static ssize_t read_mmio(struct file *file, char __user *buf, size_t count, loff_t *ppos)
-{
-    printk(KERN_INFO "%s\n", __func__);
-    return -EPERM;
-}
-
-static ssize_t write_mmio(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
-{
-    printk(KERN_INFO "%s\n", __func__);
-    return -EPERM;
 }
 
 static long ioctl_mmio(struct file *file, unsigned int cmd, unsigned long arg)
 {
     mmio_range_t *range = (mmio_range_t*)file->private_data;
-    printk(KERN_INFO "%s", __func__);
 
+    // if the range is already set it cannot be changed anymore
     if(range->phys || range->length)
         return -EACCES;
 
@@ -111,12 +101,14 @@ static long ioctl_mmio(struct file *file, unsigned int cmd, unsigned long arg)
             return -EINVAL;
     }
 
+    // extend size to full pages since we can only mmap pages
+    range->length = range->length + (range->length % PAGE_SIZE);
+
     return 0;
 }
 
 static int close_mmio(struct inode *inode, struct file *file)
 {
-    printk(KERN_INFO "%s\n", __func__);
     kfree(file->private_data);
     return 0;
 }
@@ -124,8 +116,6 @@ static int close_mmio(struct inode *inode, struct file *file)
 static const struct file_operations mmio_fops = {
     .open = open_mmio,
     .mmap = mmap_mmio,
-    .read = read_mmio,
-    .write = write_mmio,
     .unlocked_ioctl = ioctl_mmio,
     .release = close_mmio
 };
@@ -156,3 +146,4 @@ module_exit(genode_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Johannes Kliemann <jk@jkliemann.de");
 MODULE_DESCRIPTION("Provide kernel resources in user space for Genode");
+
