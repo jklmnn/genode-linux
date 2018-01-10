@@ -6,23 +6,32 @@
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/uaccess.h>
+#include <linux/slab.h>
 
-typedef struct {
-    unsigned long phys;
-    size_t length;
-} mmio_range_t;
+#include "genode.h"
 
-#define MMIO_SET_RANGE _IOW('g', 1, mmio_range_t*)
 
-static int open_mmio(struct inode *inode, struct file *filp)
+static int open_mmio(struct inode *inode, struct file *file)
 {
+    mmio_range_t *range;
     printk(KERN_INFO "%s\n", __func__);
-    return capable(CAP_SYS_RAWIO) ? 0 : -EPERM;
+    
+    if(!capable(CAP_SYS_RAWIO))
+        return -EPERM;
+    
+    file->private_data = kmalloc(sizeof(mmio_range_t), GFP_KERNEL);
+    
+    range = file->private_data;
+    range->phys = 0;
+    range->length = 0;
+    
+    return 0;
 }
 
 static int mmap_mmio(struct file* file, struct vm_area_struct *vma)
 {
-    printk(KERN_INFO "%s\n", __func__);
+    mmio_range_t *range = file->private_data;
+    printk(KERN_INFO "%s -> %lx x %lu\n", __func__, range->phys, range->length);
     return 0;
 }
 
@@ -40,13 +49,16 @@ static ssize_t write_mmio(struct file *file, const char __user *buf, size_t coun
 
 static long ioctl_mmio(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    mmio_range_t range;
+    mmio_range_t *range = (mmio_range_t*)file->private_data;
+    printk(KERN_INFO "%s", __func__);
+
+    if(range->phys || range->length)
+        return -EACCES;
+
     switch (cmd)
     {
         case MMIO_SET_RANGE:
-            if(copy_from_user(&range, (mmio_range_t*)arg, sizeof(mmio_range_t))){
-                printk(KERN_INFO "%s: %#lx %lu\n", __func__, range.phys, range.length);
-            }else{
+            if(copy_from_user(range, (mmio_range_t*)arg, sizeof(mmio_range_t))){
                 return -EACCES;
             }
             break;
@@ -57,12 +69,20 @@ static long ioctl_mmio(struct file *file, unsigned int cmd, unsigned long arg)
     return 0;
 }
 
+static int close_mmio(struct inode *inode, struct file *file)
+{
+    printk(KERN_INFO "%s\n", __func__);
+    kfree(file->private_data);
+    return 0;
+}
+
 static const struct file_operations mmio_fops = {
     .open = open_mmio,
     .mmap = mmap_mmio,
     .read = read_mmio,
     .write = write_mmio,
-    .unlocked_ioctl = ioctl_mmio
+    .unlocked_ioctl = ioctl_mmio,
+    .release = close_mmio
 };
 
 static struct miscdevice genode_mmio = {
