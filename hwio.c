@@ -8,11 +8,11 @@
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 
-#include "genode.h"
+#include "hwio.h"
 #include "mem_arch.h"
 
 
-static int open_mmio(struct inode *inode, struct file *file)
+static int open_hwio(struct inode *inode, struct file *file)
 {
     mmio_range_t *range;
     
@@ -34,7 +34,7 @@ static const struct vm_operations_struct mmap_mmio_ops = {
 #endif //CONFIG_HAVE_IOREMAP_PROT
 };
 
-static int mmap_mmio(struct file* file, struct vm_area_struct *vma)
+static int mmap_hwio(struct file* file, struct vm_area_struct *vma)
 {
     mmio_range_t *range = (mmio_range_t*)file->private_data;
     size_t size = vma->vm_end - vma->vm_start;
@@ -82,7 +82,7 @@ static int mmap_mmio(struct file* file, struct vm_area_struct *vma)
     return 0;
 }
 
-static long ioctl_mmio(struct file *file, unsigned int cmd, unsigned long arg)
+static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
 {
     mmio_range_t *range = (mmio_range_t*)file->private_data;
 
@@ -107,43 +107,43 @@ static long ioctl_mmio(struct file *file, unsigned int cmd, unsigned long arg)
     return 0;
 }
 
-static int close_mmio(struct inode *inode, struct file *file)
+static int close_hwio(struct inode *inode, struct file *file)
 {
     kfree(file->private_data);
     return 0;
 }
 
-static const struct file_operations mmio_fops = {
-    .open = open_mmio,
-    .mmap = mmap_mmio,
-    .unlocked_ioctl = ioctl_mmio,
-    .release = close_mmio
+static const struct file_operations hwio_fops = {
+    .open = open_hwio,
+    .mmap = mmap_hwio,
+    .unlocked_ioctl = ioctl_hwio,
+    .release = close_hwio
 };
 
-static struct miscdevice genode_mmio = {
+static struct miscdevice hwio_dev = {
     .minor = MISC_DYNAMIC_MINOR,
-    .name = "genode-mmio",
-    .fops = &mmio_fops
+    .name = "hwio",
+    .fops = &hwio_fops
 };
 
-static int __init genode_init(void)
+static int __init hwio_init(void)
 {
-    misc_register(&genode_mmio);
-    printk(KERN_INFO "genode module registered\n");
+    misc_register(&hwio_dev);
+    printk(KERN_INFO "hwio module registered\n");
     return 0;
 }
 
-static void __exit genode_exit(void)
+static void __exit hwio_exit(void)
 {
-    misc_deregister(&genode_mmio);
-    printk(KERN_INFO "genode module unregistered\n");
+    misc_deregister(&hwio_dev);
+    printk(KERN_INFO "hwio module unregistered\n");
 }
 
 
-module_init(genode_init);
-module_exit(genode_exit);
+module_init(hwio_init);
+module_exit(hwio_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Johannes Kliemann <jk@jkliemann.de");
-MODULE_DESCRIPTION("Provide kernel resources in user space for Genode");
+MODULE_DESCRIPTION("Provide hardware io resources in user space");
 
