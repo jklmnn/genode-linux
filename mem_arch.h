@@ -34,7 +34,7 @@ static inline int private_mapping_ok(struct vm_area_struct *vma)
 
 #endif //CONFIG_MMU
 
-#ifdef CONFIG_STRICT_DEVMEM
+#if defined(CONFIG_STRICT_DEVMEM) && !defined(MODULE)
 
 static inline int range_is_allowed(unsigned long pfn, unsigned long size)
 {
@@ -43,14 +43,10 @@ static inline int range_is_allowed(unsigned long pfn, unsigned long size)
     u64 cursor = from;
 
     while (cursor < to){
-        /*
-         * if(!devmem_is_allowed(pfn))
-         *   return 0;
-         * FIXME: devmem_is_allowed is an unknown symbol to the kernel
-         *        it probably can't be used in kernel modules
-         *        a custom, probably architecture dependent, implementation might help
-         *        or we ignore that we can access probably insecure memory
-         */
+        
+        if(!devmem_is_allowed(pfn))
+            return 0;
+
         cursor += PAGE_SIZE;
         pfn++;
     }
