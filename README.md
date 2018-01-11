@@ -1,2 +1,2 @@
-# genode-linux
-Linux kernel module to provide kernel resources to Genode
+# hwiodev
+Linux kernel module to provide hardware io resources to userspace
