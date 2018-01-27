@@ -38,7 +38,11 @@ static int mmap_hwio(struct file* file, struct vm_area_struct *vma)
 {
     mmio_range_t *range = (mmio_range_t*)file->private_data;
     size_t size = vma->vm_end - vma->vm_start;
-    phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
+    phys_addr_t offset = (phys_addr_t)(range->phys + vma->vm_pgoff); //(phys_addr_t)(vma->vm_pgoff) << PAGE_SHIFT;
+
+    printk("__func__ vma->vm_pgoff: %lx\n", vma->vm_pgoff);
+    printk("__func__ offset: %llx\n", offset);
+    printk("__func__ range: %lx x %zu\n", range->phys, range->length);
 
     // check boundaries set by ioctl
     if(size > range->length)
