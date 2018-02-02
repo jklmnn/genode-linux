@@ -151,6 +151,6 @@ module_init(hwio_init);
 module_exit(hwio_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Johannes Kliemann <jk@jkliemann.de");
+MODULE_AUTHOR("Johannes Kliemann <jk@jkliemann.de>");
 MODULE_DESCRIPTION("Provide hardware io resources in user space");
 
