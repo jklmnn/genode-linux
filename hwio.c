@@ -7,10 +7,12 @@
 #include <linux/miscdevice.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
+#include <linux/interrupt.h>
 
 #include "hwio.h"
 #include "mem_arch.h"
 
+static int cookie;
 
 static int open_hwio(struct inode *inode, struct file *file)
 {
@@ -89,6 +91,12 @@ static int mmap_hwio(struct file* file, struct vm_area_struct *vma)
     return 0;
 }
 
+static irqreturn_t irq_dispatcher(int irq, void *dev_id)
+{
+    printk("%s %d %d\n", __func__, irq, *(int*)dev_id);
+    return IRQ_RETVAL(1);
+}
+
 static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
 {
     mmio_range_t *range = (mmio_range_t*)file->private_data;
@@ -135,8 +143,14 @@ static struct miscdevice hwio_dev = {
 
 static int __init hwio_init(void)
 {
+    int ret;
     misc_register(&hwio_dev);
     printk(KERN_INFO "hwio module registered\n");
+    cookie = 42;
+    ret = request_irq(20, irq_dispatcher, IRQF_SHARED | IRQF_NO_SUSPEND, "i8042", (void*)&cookie);
+    if (ret < 0){
+        printk(KERN_ALERT "%s: requesting_irq failed with %d\n", __func__, ret);
+    }
     return 0;
 }
 
