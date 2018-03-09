@@ -8,6 +8,7 @@
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
+#include <linux/string.h>
 
 #include "hwio.h"
 #include "mem_arch.h"
@@ -16,16 +17,15 @@ static int cookie;
 
 static int open_hwio(struct inode *inode, struct file *file)
 {
-    mmio_range_t *range;
+    hwio_data_t *range;
     
     if(!capable(CAP_SYS_RAWIO))
         return -EPERM;
     
-    file->private_data = kmalloc(sizeof(mmio_range_t), GFP_KERNEL);
+    file->private_data = kmalloc(sizeof(hwio_data_t), GFP_KERNEL);
     
     range = file->private_data;
-    range->phys = 0;
-    range->length = 0;
+    memset(range, 0, sizeof(hwio_data_t));
     
     return 0;
 }
@@ -38,10 +38,15 @@ static const struct vm_operations_struct mmap_mmio_ops = {
 
 static int mmap_hwio(struct file* file, struct vm_area_struct *vma)
 {
-    mmio_range_t *range = (mmio_range_t*)file->private_data;
+    hwio_data_t *hwio = (hwio_data_t*)file->private_data;
+    mmio_range_t *range = &(hwio->mmio);
     size_t size = vma->vm_end - vma->vm_start;
     phys_addr_t offset;
     
+    if (hwio->type != T_MMIO){
+        return -EPERM;
+    }
+
     vma->vm_pgoff = range->phys >> PAGE_SHIFT;
     offset = (phys_addr_t)(vma->vm_pgoff) << PAGE_SHIFT;
 
@@ -99,10 +104,12 @@ static irqreturn_t irq_dispatcher(int irq, void *dev_id)
 
 static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    mmio_range_t *range = (mmio_range_t*)file->private_data;
+    hwio_data_t *hwio = (hwio_data_t*)file->private_data;
+    mmio_range_t *range = &(hwio->mmio);
+    int *irq = hwio->irq;
 
     // if the range is already set it cannot be changed anymore
-    if(range->phys || range->length)
+    if(hwio->type != T_UNCONFIGURED)
         return -EACCES;
 
     switch (cmd)
@@ -117,7 +124,9 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
     }
 
     // extend size to full pages since we can only mmap pages
-    range->length = range->length + (range->length % PAGE_SIZE);
+    if(hwio->type == T_MMIO){
+        range->length = range->length + (range->length % PAGE_SIZE);
+    }
 
     return 0;
 }
