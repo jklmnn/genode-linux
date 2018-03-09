@@ -13,8 +13,6 @@
 #include "hwio.h"
 #include "mem_arch.h"
 
-static int cookie;
-
 static int open_hwio(struct inode *inode, struct file *file)
 {
     hwio_data_t *range;
@@ -98,15 +96,17 @@ static int mmap_hwio(struct file* file, struct vm_area_struct *vma)
 
 static irqreturn_t irq_dispatcher(int irq, void *dev_id)
 {
-    printk("%s %d %d\n", __func__, irq, *(int*)dev_id);
+    hwio_data_t *hwio = (hwio_data_t*)dev_id;
+    printk("%s %d %d\n", __func__, irq, hwio->irq);
     return IRQ_RETVAL(1);
 }
 
 static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
 {
+    int ret;
     hwio_data_t *hwio = (hwio_data_t*)file->private_data;
     mmio_range_t *range = &(hwio->mmio);
-    int *irq = hwio->irq;
+    irq_t *irq = &(hwio->irq);
 
     // if the range is already set it cannot be changed anymore
     if(hwio->type != T_UNCONFIGURED)
@@ -118,6 +118,18 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
             if(copy_from_user(range, (mmio_range_t*)arg, sizeof(mmio_range_t))){
                 return -EACCES;
             }
+            hwio->type = T_MMIO;
+            break;
+        case IRQ_SET:
+            if(copy_from_user(irq, (irq_t*)arg, sizeof(irq_t))){
+                return -EACCES;
+            }
+            ret = request_irq(*irq, irq_dispatcher, IRQF_SHARED | IRQF_NO_SUSPEND, __func__, (void*)hwio);
+            if (ret < 0){
+                printk(KERN_ALERT "%s: requesting_irq failed with %d\n", __func__, ret);
+                return ret;
+            }
+            hwio->type = T_IRQ;
             break;
         default:
             return -EINVAL;
@@ -133,6 +145,12 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
 
 static int close_hwio(struct inode *inode, struct file *file)
 {
+    hwio_data_t *hwio = (hwio_data_t*)(file->private_data);
+    if (hwio->type == T_IRQ)
+    {
+        free_irq(hwio->irq, hwio);
+    }
+
     kfree(file->private_data);
     return 0;
 }
@@ -152,14 +170,8 @@ static struct miscdevice hwio_dev = {
 
 static int __init hwio_init(void)
 {
-    int ret;
     misc_register(&hwio_dev);
     printk(KERN_INFO "hwio module registered\n");
-    cookie = 42;
-    ret = request_irq(20, irq_dispatcher, IRQF_SHARED | IRQF_NO_SUSPEND, "i8042", (void*)&cookie);
-    if (ret < 0){
-        printk(KERN_ALERT "%s: requesting_irq failed with %d\n", __func__, ret);
-    }
     return 0;
 }
 
