@@ -13,6 +13,20 @@
 #include "hwio.h"
 #include "mem_arch.h"
 
+typedef struct {
+    int irq;
+    wait_queue_head_t wait;
+    int status;
+} irq_t;
+
+typedef struct {
+    int type;
+    union {
+        mmio_range_t mmio;
+        irq_t irq;
+    };
+} hwio_data_t;
+
 static int open_hwio(struct inode *inode, struct file *file)
 {
     hwio_data_t *range;
@@ -97,7 +111,12 @@ static int mmap_hwio(struct file* file, struct vm_area_struct *vma)
 static irqreturn_t irq_dispatcher(int irq, void *dev_id)
 {
     hwio_data_t *hwio = (hwio_data_t*)dev_id;
-    printk("%s %d %d\n", __func__, irq, hwio->irq);
+
+    if (hwio->type == T_IRQ){
+        hwio->irq.status = 1;
+        wake_up_all(&(hwio->irq.wait));
+    }
+
     return IRQ_RETVAL(1);
 }
 
@@ -121,14 +140,15 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
             hwio->type = T_MMIO;
             break;
         case IRQ_SET:
-            if(copy_from_user(irq, (irq_t*)arg, sizeof(irq_t))){
+            if(copy_from_user(&(irq->irq), (int*)arg, sizeof(irq_t))){
                 return -EACCES;
             }
-            ret = request_irq(*irq, irq_dispatcher, IRQF_SHARED | IRQF_NO_SUSPEND, __func__, (void*)hwio);
+            ret = request_irq(irq->irq, irq_dispatcher, IRQF_SHARED | IRQF_NO_SUSPEND, __func__, (void*)hwio);
             if (ret < 0){
-                printk(KERN_ALERT "%s: requesting_irq failed with %d\n", __func__, ret);
+                printk(KERN_ALERT "%s: requesting irq %d failed with %d\n", __func__, irq->irq, ret);
                 return ret;
             }
+            init_waitqueue_head(&(irq->wait));
             hwio->type = T_IRQ;
             break;
         default:
@@ -143,12 +163,26 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
     return 0;
 }
 
+ssize_t read_hwio (struct file *file, char __user * __attribute__((unused))str, size_t __attribute__((unused))size, loff_t *__attribute__((unused))offset)
+{
+    hwio_data_t *hwio = (hwio_data_t*)(file->private_data);
+
+    if (hwio->type != T_IRQ){
+        return -EACCES;
+    }
+
+    wait_event_interruptible(hwio->irq.wait, hwio->irq.status);
+    hwio->irq.status = 0;
+
+    return 0;
+}
+
 static int close_hwio(struct inode *inode, struct file *file)
 {
     hwio_data_t *hwio = (hwio_data_t*)(file->private_data);
     if (hwio->type == T_IRQ)
     {
-        free_irq(hwio->irq, hwio);
+        free_irq(hwio->irq.irq, hwio);
     }
 
     kfree(file->private_data);
@@ -158,6 +192,7 @@ static int close_hwio(struct inode *inode, struct file *file)
 static const struct file_operations hwio_fops = {
     .open = open_hwio,
     .mmap = mmap_hwio,
+    .read = read_hwio,
     .unlocked_ioctl = ioctl_hwio,
     .release = close_hwio
 };
