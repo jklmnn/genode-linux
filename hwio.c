@@ -143,6 +143,7 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
             if(copy_from_user(&(irq->irq), (int*)arg, sizeof(irq_t))){
                 return -EACCES;
             }
+            printk("%s requesting irq %d\n", __func__, irq->irq);
             ret = request_irq(irq->irq, irq_dispatcher, IRQF_SHARED | IRQF_NO_SUSPEND, __func__, (void*)hwio);
             if (ret < 0){
                 printk(KERN_ALERT "%s: requesting irq %d failed with %d\n", __func__, irq->irq, ret);
@@ -152,6 +153,7 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
             hwio->type = T_IRQ;
             break;
         default:
+            printk(KERN_ALERT "%s invalid command %d\n", __func__, cmd);
             return -EINVAL;
     }
 
