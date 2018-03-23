@@ -20,25 +20,32 @@ typedef struct {
 } irq_t;
 
 typedef struct {
+    size_t size;
+    void *virt;
+    dma_addr_t phys;
+} dma_t;
+
+typedef struct {
     int type;
     union {
         mmio_range_t mmio;
         irq_t irq;
+        dma_t dma;
     };
 } hwio_data_t;
 
 static int open_hwio(struct inode *inode, struct file *file)
 {
     hwio_data_t *range;
-    
+
     if(!capable(CAP_SYS_RAWIO))
         return -EPERM;
-    
+
     file->private_data = kmalloc(sizeof(hwio_data_t), GFP_KERNEL);
-    
+
     range = file->private_data;
     memset(range, 0, sizeof(hwio_data_t));
-    
+
     return 0;
 }
 
@@ -54,7 +61,7 @@ static int mmap_hwio(struct file* file, struct vm_area_struct *vma)
     mmio_range_t *range = &(hwio->mmio);
     size_t size = vma->vm_end - vma->vm_start;
     phys_addr_t offset;
-    
+
     if (hwio->type != T_MMIO){
         return -EPERM;
     }
@@ -126,6 +133,7 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
     hwio_data_t *hwio = (hwio_data_t*)file->private_data;
     mmio_range_t *range = &(hwio->mmio);
     irq_t *irq = &(hwio->irq);
+    dma_t *dma = &(hwio->dma);
 
     // if the range is already set it cannot be changed anymore
     if(hwio->type != T_UNCONFIGURED)
@@ -137,10 +145,13 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
             if(copy_from_user(range, (mmio_range_t*)arg, sizeof(mmio_range_t))){
                 return -EACCES;
             }
+            // extend size to full pages since we can only mmap pages
+            range->length = range->length + (range->length % PAGE_SIZE);
             hwio->type = T_MMIO;
             break;
+
         case IRQ_SET:
-            if(copy_from_user(&(irq->irq), (int*)arg, sizeof(irq_t))){
+            if(copy_from_user(&(irq->irq), (int*)arg, sizeof(int))){
                 return -EACCES;
             }
             printk("%s requesting irq %d\n", __func__, irq->irq);
@@ -152,14 +163,21 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
             init_waitqueue_head(&(irq->wait));
             hwio->type = T_IRQ;
             break;
+
+        case DMA_SET:
+            if(copy_from_user(&(dma->size), (size_t*)arg, sizeof(size_t))){
+                return -EACCES;
+            }
+            dma->virt = dma_alloc_coherent(NULL, dma->size, &(dma->phys), GFP_KERNEL);
+            if(!dma->virt){
+                printk(KERN_ALERT "%s: failed to allocate dma memory\n", __func__);
+            }
+            hwio->type = T_DMA;
+            break;
+
         default:
             printk(KERN_ALERT "%s invalid command %d\n", __func__, cmd);
             return -EINVAL;
-    }
-
-    // extend size to full pages since we can only mmap pages
-    if(hwio->type == T_MMIO){
-        range->length = range->length + (range->length % PAGE_SIZE);
     }
 
     return 0;
@@ -169,12 +187,19 @@ ssize_t read_hwio (struct file *file, char __user * __attribute__((unused))str, 
 {
     hwio_data_t *hwio = (hwio_data_t*)(file->private_data);
 
-    if (hwio->type != T_IRQ){
-        return -EACCES;
-    }
+    switch (hwio->type)
+    {
+        case T_IRQ:
+            wait_event_interruptible(hwio->irq.wait, hwio->irq.status);
+            hwio->irq.status = 0;
+            break;
 
-    wait_event_interruptible(hwio->irq.wait, hwio->irq.status);
-    hwio->irq.status = 0;
+        case T_DMA:
+            break;
+
+        default:
+            return -EACCES;
+    }
 
     return 0;
 }
@@ -182,6 +207,15 @@ ssize_t read_hwio (struct file *file, char __user * __attribute__((unused))str, 
 static int close_hwio(struct inode *inode, struct file *file)
 {
     hwio_data_t *hwio = (hwio_data_t*)(file->private_data);
+
+    switch (hwio->type){
+        case T_IRQ:
+            free_irq(hwio->irq.irq, hwio);
+            break;
+
+        default:
+            break;
+    }
     if (hwio->type == T_IRQ)
     {
         free_irq(hwio->irq.irq, hwio);
