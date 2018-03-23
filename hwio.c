@@ -9,6 +9,7 @@
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/string.h>
+#include <linux/dma-mapping.h>
 
 #include "hwio.h"
 #include "mem_arch.h"
@@ -59,58 +60,77 @@ static int mmap_hwio(struct file* file, struct vm_area_struct *vma)
 {
     hwio_data_t *hwio = (hwio_data_t*)file->private_data;
     mmio_range_t *range = &(hwio->mmio);
+    dma_t *dma = &(hwio->dma);
     size_t size = vma->vm_end - vma->vm_start;
     phys_addr_t offset;
+    unsigned long phys;
 
-    if (hwio->type != T_MMIO){
-        return -EPERM;
+    switch (hwio->type)
+    {
+        case T_MMIO:
+            vma->vm_pgoff = range->phys >> PAGE_SHIFT;
+            offset = (phys_addr_t)(vma->vm_pgoff) << PAGE_SHIFT;
+
+            printk("%s vma->vm_pgoff: %lx\n", __func__, vma->vm_pgoff);
+            printk("%s offset: %llx\n", __func__, offset);
+            printk("%s range: %lx x %zu\n", __func__, range->phys, range->length);
+
+            // check boundaries set by ioctl
+            if(size > range->length)
+                return -EPERM;
+
+            if(range->phys > offset)
+                return -EPERM;
+
+            if(range->phys + range->length < offset + size)
+                return -EPERM;
+
+
+            // check boundaries set by kernel and architecture
+            if(offset + (phys_addr_t)size - 1 < offset)
+                return -EINVAL;
+
+            if(!valid_mmap_phys_addr_range(vma->vm_pgoff, size))
+                return -EINVAL;
+
+            if(!private_mapping_ok(vma))
+                return -ENOSYS;
+
+            if(!range_is_allowed(vma->vm_pgoff, size))
+                return -EPERM;
+
+            if(!phys_mem_access_prot_allowed(file, vma->vm_pgoff, size, &vma->vm_page_prot))
+                return -EINVAL;
+
+
+            vma->vm_ops = &mmap_mmio_ops;
+
+            if(remap_pfn_range(
+                        vma,
+                        vma->vm_start,
+                        vma->vm_pgoff,
+                        size,
+                        vma->vm_page_prot
+                        ))
+                return -EAGAIN;
+            break;
+
+        case T_DMA:
+
+            printk("%s: %zu %zu\n", __func__, size, dma->size);
+            if(size > dma->size){
+                return -EPERM;
+            }
+
+            phys = virt_to_phys(dma->virt) >> PAGE_SHIFT;
+            if(remap_pfn_range(vma, vma->vm_start, phys, size, vma->vm_page_prot)){
+                return -EAGAIN;
+            }
+            break;
+
+        default:
+            return -EPERM;
     }
-
-    vma->vm_pgoff = range->phys >> PAGE_SHIFT;
-    offset = (phys_addr_t)(vma->vm_pgoff) << PAGE_SHIFT;
-
-    printk("%s vma->vm_pgoff: %lx\n", __func__, vma->vm_pgoff);
-    printk("%s offset: %llx\n", __func__, offset);
-    printk("%s range: %lx x %zu\n", __func__, range->phys, range->length);
-
-    // check boundaries set by ioctl
-    if(size > range->length)
-        return -EPERM;
-
-    if(range->phys > offset)
-        return -EPERM;
-
-    if(range->phys + range->length < offset + size)
-        return -EPERM;
-
-
-    // check boundaries set by kernel and architecture
-    if(offset + (phys_addr_t)size - 1 < offset)
-        return -EINVAL;
-
-    if(!valid_mmap_phys_addr_range(vma->vm_pgoff, size))
-        return -EINVAL;
-
-    if(!private_mapping_ok(vma))
-        return -ENOSYS;
-
-    if(!range_is_allowed(vma->vm_pgoff, size))
-        return -EPERM;
-
-    if(!phys_mem_access_prot_allowed(file, vma->vm_pgoff, size, &vma->vm_page_prot))
-        return -EINVAL;
-
-
-    vma->vm_ops = &mmap_mmio_ops;
-
-    if(remap_pfn_range(
-                vma,
-                vma->vm_start,
-                vma->vm_pgoff,
-                size,
-                vma->vm_page_prot
-                ))
-        return -EAGAIN;
 
     return 0;
 }
@@ -135,6 +155,8 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
     irq_t *irq = &(hwio->irq);
     dma_t *dma = &(hwio->dma);
 
+    printk("%s\n", __func__);
+
     // if the range is already set it cannot be changed anymore
     if(hwio->type != T_UNCONFIGURED)
         return -EACCES;
@@ -146,7 +168,7 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
                 return -EACCES;
             }
             // extend size to full pages since we can only mmap pages
-            range->length = range->length + (range->length % PAGE_SIZE);
+            range->length = (range->length / PAGE_SIZE * PAGE_SIZE) + !!(range->length % PAGE_SIZE) * PAGE_SIZE;
             hwio->type = T_MMIO;
             break;
 
@@ -172,6 +194,9 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
             if(!dma->virt){
                 printk(KERN_ALERT "%s: failed to allocate dma memory\n", __func__);
             }
+            // extend size to full pages since we can only mmap pages
+            dma->size = (dma->size / PAGE_SIZE * PAGE_SIZE) + !!(dma->size % PAGE_SIZE) * PAGE_SIZE;
+            printk("%s allocated %zu byte dma memory @ %#llx\n", __func__, dma->size, dma->phys);
             hwio->type = T_DMA;
             break;
 
@@ -183,9 +208,10 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
     return 0;
 }
 
-ssize_t read_hwio (struct file *file, char __user * __attribute__((unused))str, size_t __attribute__((unused))size, loff_t *__attribute__((unused))offset)
+ssize_t read_hwio (struct file *file, char __user *data, size_t size, loff_t *__attribute__((unused))offset)
 {
     hwio_data_t *hwio = (hwio_data_t*)(file->private_data);
+    printk("%s\n", __func__);
 
     switch (hwio->type)
     {
@@ -195,6 +221,14 @@ ssize_t read_hwio (struct file *file, char __user * __attribute__((unused))str, 
             break;
 
         case T_DMA:
+            if(size < sizeof(dma_addr_t)){
+                printk(KERN_ALERT "%s: insufficient size %zu\n", __func__, size);
+                return -EINVAL;
+            }
+            if(copy_to_user((void *)data, &(hwio->dma.phys), sizeof(dma_addr_t))){
+                return -EACCES;
+            }
+            return sizeof(dma_addr_t);
             break;
 
         default:
@@ -207,6 +241,7 @@ ssize_t read_hwio (struct file *file, char __user * __attribute__((unused))str, 
 static int close_hwio(struct inode *inode, struct file *file)
 {
     hwio_data_t *hwio = (hwio_data_t*)(file->private_data);
+    printk("%s\n", __func__);
 
     switch (hwio->type){
         case T_IRQ:
