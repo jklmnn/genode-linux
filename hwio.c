@@ -63,7 +63,6 @@ static int mmap_hwio(struct file* file, struct vm_area_struct *vma)
     dma_t *dma = &(hwio->dma);
     size_t size = vma->vm_end - vma->vm_start;
     phys_addr_t offset;
-    unsigned long phys;
 
     switch (hwio->type)
     {
@@ -121,12 +120,7 @@ static int mmap_hwio(struct file* file, struct vm_area_struct *vma)
             if(size > dma->size){
                 return -EPERM;
             }
-
-            phys = virt_to_phys(dma->virt) >> PAGE_SHIFT;
-            if(remap_pfn_range(vma, vma->vm_start, phys, size, vma->vm_page_prot)){
-                return -EAGAIN;
-            }
-            break;
+            return dma_mmap_coherent(NULL, vma, dma->virt, dma->phys, dma->size);
 
         default:
             return -EPERM;
@@ -193,6 +187,7 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
             dma->virt = dma_alloc_coherent(NULL, dma->size, &(dma->phys), GFP_KERNEL);
             if(!dma->virt){
                 printk(KERN_ALERT "%s: failed to allocate dma memory\n", __func__);
+                return -ENOMEM;
             }
             // extend size to full pages since we can only mmap pages
             dma->size = (dma->size / PAGE_SIZE * PAGE_SIZE) + !!(dma->size % PAGE_SIZE) * PAGE_SIZE;
