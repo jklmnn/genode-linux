@@ -177,6 +177,7 @@ static long ioctl_hwio(struct file *file, unsigned int cmd, unsigned long arg)
                 return ret;
             }
             init_waitqueue_head(&(irq->wait));
+            disable_irq(irq->irq);
             hwio->type = T_IRQ;
             break;
 
@@ -211,7 +212,9 @@ ssize_t read_hwio (struct file *file, char __user *data, size_t size, loff_t *__
     switch (hwio->type)
     {
         case T_IRQ:
+            enable_irq(hwio->irq.irq);
             wait_event_interruptible(hwio->irq.wait, hwio->irq.status);
+            disable_irq(hwio->irq.irq);
             hwio->irq.status = 0;
             break;
 
